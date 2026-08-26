@@ -1,0 +1,385 @@
+
+🎬 Cinema Flow Agent
+Diagrama técnico de implementación — MVP Agentic
+La arquitectura es esta:
+┌───────────────────────────────────────────────────────────────┐
+│                         CUSTOMER                              │
+│                                                               │
+│  Web / Mobile                                                 │
+│  "Quiero un Family Combo para la película Superman 20:30"                 │
+└─────────────────────────────┬─────────────────────────────────┘
+                              │
+                              ▼
+┌───────────────────────────────────────────────────────────────┐
+│                    GEMINI CUSTOMER AGENT                      │
+│                                                               │
+│  • Understand intent                                          │
+│  • Ask missing information                                    │
+│  • Recommend products                                         │
+│  • Confirm customer choice                                    │
+│                                                               │
+│  OUTPUT: Structured Customer Intent                            │
+└─────────────────────────────┬─────────────────────────────────┘
+                              │
+                              ▼
+╔═══════════════════════════════════════════════════════════════╗
+║                  IBM watsonx Orchestrate                      ║
+║                                                               ║
+║              AGENTIC ORCHESTRATION LAYER                     ║
+║                                                               ║
+║   Decides which agent/tool must execute each action           ║
+╚═════════════════════════════╤═════════════════════════════════╝
+                              │
+              ┌───────────────┼────────────────┐
+              │               │                │
+              ▼               ▼                ▼
+       ┌────────────┐  ┌────────────┐  ┌──────────────┐
+       │ ORDER      │  │ INVENTORY  │  │ FULFILLMENT  │
+       │ AGENT      │  │ AGENT      │  │ AGENT        │
+       └─────┬──────┘  └─────┬──────┘  └──────┬───────┘
+             │               │                 │
+             └───────────────┼─────────────────┘
+                             │
+                             ▼
+                ┌─────────────────────────┐
+                │    BUSINESS TOOLS       │
+                │                         │
+                │ check_inventory()       │
+                │ create_order()          │
+                │ update_order()          │
+                │ calculate_prep_time()   │
+                │ schedule_preparation()  │
+                │ validate_qr()           │
+                │ complete_pickup()       │
+                └────────────┬────────────┘
+                             │
+                             ▼
+                ┌─────────────────────────┐
+                │     CINEMA BACKEND      │
+                │        FastAPI          │
+                └────────────┬────────────┘
+                             │
+            ┌────────────────┼────────────────┐
+            ▼                ▼                ▼
+       ┌─────────┐      ┌───────────┐    ┌──────────┐
+       │ ORDERS  │      │ INVENTORY │    │ SHOWTIME │
+       │ SQLite  │      │  SQLite   │    │  SQLite  │
+       └─────────┘      └───────────┘    └──────────┘
+                             │
+                             ▼
+                     ┌──────────────┐
+                     │ QR SERVICE   │
+                     └──────┬───────┘
+                            │
+                            ▼
+                     ┌──────────────┐
+                     │ EXPRESS      │
+                     │ PICKUP       │
+                     └──────────────┘
+
+1. La pieza clave: Customer Intent
+Gemini no debería enviar una conversación completa al backend debe convertirla en una estructura.
+Por ejemplo:
+{
+  "customer": {
+    "name": "Demo Customer"
+  },
+  "movie": {
+    "id": 1,
+    "title": "Superman"
+  },
+  "showtime": {
+    "id": 1,
+    "time": "20:30"
+  },
+  "party_size": 3,
+  "preference": "family",
+  "pickup": "express"
+}
+Esto es importante porque separa:
+lenguaje humano → datos estructurados.
+
+2. Order Agent
+El Order Agent recibe esa información.
+Tool:
+create_order()
+Input:
+{
+  "showtime_id": 1,
+  "customer_id": "demo-001",
+  "items": [
+    {
+      "product_id": 7,
+      "quantity": 1
+    }
+  ]
+}
+Output:
+{
+  "order_id": "CF-000123",
+  "total": 26.00,
+  "status": "PENDING"
+}
+Esto se conecta directamente con nuestro:
+POST /api/orders
+del MVP que acabamos de construir.
+
+3. Inventory Agent
+Tool:
+check_inventory()
+Input:
+{
+  "product_id": 7,
+  "quantity": 1
+}
+Output:
+{
+  "available": true,
+  "stock": 14
+}
+Pero podemos hacerlo más inteligente:
+{
+  "available": true,
+  "stock": 14,
+  "expected_demand": 8,
+  "projected_stock": 6,
+  "risk": "LOW"
+}
+Esto prepara el terreno para la inteligencia predictiva.
+
+4. Fulfillment Agent
+Aquí está una de las partes más interesantes.
+Tool:
+calculate_preparation_time()
+Input:
+{
+  "order_id": "CF-000123",
+  "showtime": "20:30",
+  "items": [
+    {
+      "product_id": 7,
+      "quantity": 1
+    }
+  ]
+}
+Output:
+{
+  "preparation_time_minutes": 7,
+  "recommended_start": "20:18",
+  "ready_target": "20:25"
+}
+Después:
+schedule_preparation()
+
+5. QR Agent / Pickup Tool
+Cuando el pago está confirmado:
+generate_qr()
+produce:
+{
+  "order_id": "CF-000123",
+  "qr_token": "CF-PICKUP-X7A91",
+  "status": "READY_FOR_PICKUP"
+}
+Cuando llega el cliente:
+validate_qr()
+comprueba:
+ORDER EXISTS
+      ↓
+PAYMENT CONFIRMED
+      ↓
+ORDER READY
+      ↓
+NOT ALREADY PICKED UP
+      ↓
+       YES
+      ↓
+RELEASE ORDER
+
+6. Operations Agent
+Este agente no necesariamente participa en cada compra trabaja sobre el conjunto del cine.
+Por ejemplo, cada cierto intervalo analiza:
+Showtimes
++
+Occupancy
++
+Orders
++
+Inventory
++
+Preparation times
++
+Pickup times
+Y puede producir:
+{
+  "showtime": "20:30",
+  "movie": "Superman",
+  "occupancy": 92,
+  "expected_concession_orders": 48,
+  "recommendation": "Increase popcorn preparation",
+  "priority": "HIGH"
+}
+Esto es lo que posteriormente podemos convertir en una demostración de IA predictiva.
+
+7. API que debemos añadir al MVP
+Nuestro código actual ya tiene buena parte del fundamento.
+Tenemos:
+GET  /api/showtimes
+GET  /api/concessions
+
+POST /api/orders
+
+POST /api/orders/{id}/pay
+
+GET  /api/orders/{id}
+
+GET  /api/orders/{id}/qr
+
+POST /api/pickup/validate
+
+GET  /api/dashboard
+Ahora añadiremos una capa Agentic:
+POST /api/agent/intent
+POST /api/agent/check-inventory
+POST /api/agent/create-order
+POST /api/agent/fulfillment
+POST /api/agent/operations
+Pero estos endpoints no tienen que duplicar la lógica existente.
+Serán adaptadores entre los agentes y nuestros servicios.
+
+
+
+8. Arquitectura de código
+Nuestro proyecto pasa de:
+backend/
+├── app.py
+└── database.py
+a:
+backend/
+│
+├── app.py
+│
+├── database.py
+│
+├── models/
+│   ├── order.py
+│   ├── product.py
+│   └── showtime.py
+│
+├── services/
+│   ├── order_service.py
+│   ├── inventory_service.py
+│   ├── fulfillment_service.py
+│   └── qr_service.py
+│
+├── agents/
+│   ├── customer_agent.py
+│   ├── order_agent.py
+│   ├── inventory_agent.py
+│   ├── fulfillment_agent.py
+│   └── operations_agent.py
+│
+├── tools/
+│   ├── inventory_tools.py
+│   ├── order_tools.py
+│   ├── fulfillment_tools.py
+│   └── pickup_tools.py
+│
+└── integrations/
+    ├── gemini/
+    └── watsonx/
+Esto es importante:
+Agent ≠ Tool ≠ Service
+Un agente decide qué necesita hacer, una tool ejecuta una acción y un service contiene la lógica empresarial.
+
+9. Flujo completo de una orden
+Esta sería nuestra secuencia técnica:
+USER
+ │
+ │ "Family Combo"
+ ▼
+GEMINI
+ │
+ │ Customer Intent
+ ▼
+WATSONX ORCHESTRATE
+ │
+ ├──── check_inventory()
+ │          │
+ │          ▼
+ │       AVAILABLE
+ │
+ ├──── create_order()
+ │          │
+ │          ▼
+ │       CF-000123
+ │
+ ├──── payment
+ │
+ ├──── calculate_preparation()
+ │          │
+ │          ▼
+ │       20:18
+ │
+ ├──── schedule_preparation()
+ │
+ └──── generate_qr()
+            │
+            ▼
+         QR CODE
+            │
+            ▼
+        CUSTOMER
+            │
+            │ arrives
+            ▼
+        SCAN QR
+            │
+            ▼
+       validate_qr()
+            │
+            ▼
+      PICKUP COMPLETE
+
+10. Luego añadimos: Event Layer
+Hay una mejora que se dejaría preparada desde ahora.En lugar de que todo dependa de llamadas directas:
+create_order()
+
+       ↓
+calculate()
+       ↓
+prepare()
+podemos generar eventos:
+ORDER_CREATED
+      ↓
+PAYMENT_CONFIRMED
+      ↓
+PREPARATION_SCHEDULED
+      ↓
+ORDER_READY
+      ↓
+QR_SCANNED
+      ↓
+ORDER_PICKED_UP
+Esto permitirá posteriormente que varios agentes reaccionen a los mismos eventos.
+Por ejemplo:
+ORDER_CREATED
+      │
+      ├── Inventory Agent
+      │
+      ├── Fulfillment Agent
+      │
+      └── Analytics Agent
+Ahí empieza a aparecer una arquitectura verdaderamente orientada a agentes.
+
+11. Arquitectura final del Proyecto
+Yo la presentaría al jurado en cuatro capas:
+Capa 1 — Experience
+Customer + Gemini
+Capa 2 — Intelligence
+Agents
+Capa 3 — Orchestration
+IBM watsonx Orchestrate
+Capa 4 — Execution
+Cinema APIs + Database + QR + Operations
+Y una flecha transversal:
+Analytics → aprende de cada operación.
